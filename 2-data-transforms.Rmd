@@ -114,28 +114,28 @@ We saw in the previous sections how we could write our user-defined functions (U
 ```{r custom_transform}
 
 xforms <- function(data) { # transformation function for extracting some date and time features
-  require(lubridate)
+  # require(lubridate)
   weekday_labels <- c('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')
   cut_levels <- c(1, 5, 9, 12, 16, 18, 22)
   hour_labels <- c('1AM-5AM', '5AM-9AM', '9AM-12PM', '12PM-4PM', '4PM-6PM', '6PM-10PM', '10PM-1AM')
   
-  pickup_datetime <- ymd_hms(data$tpep_pickup_datetime, tz = "UTC")
+  pickup_datetime <- lubridate::ymd_hms(data$tpep_pickup_datetime, tz = "UTC")
   pickup_hour <- addNA(cut(hour(pickup_datetime), cut_levels))
   pickup_dow <- factor(wday(pickup_datetime), levels = 1:7, labels = weekday_labels)
   levels(pickup_hour) <- hour_labels
-  
-  dropoff_datetime <- ymd_hms(data$tpep_dropoff_datetime, tz = "UTC")
+  # 
+  dropoff_datetime <- lubridate::ymd_hms(data$tpep_dropoff_datetime, tz = "UTC")
   dropoff_hour <- addNA(cut(hour(dropoff_datetime), cut_levels))
   dropoff_dow <- factor(wday(dropoff_datetime), levels = 1:7, labels = weekday_labels)
   levels(dropoff_hour) <- hour_labels
-  
+  # 
   data$pickup_hour <- pickup_hour
   data$pickup_dow <- pickup_dow
   data$dropoff_hour <- dropoff_hour
   data$dropoff_dow <- dropoff_dow
-  data$trip_duration <- as.integer(as.duration(dropoff_datetime - pickup_datetime))
+  data$trip_duration <- as.integer(lubridate::interval(pickup_datetime, dropoff_datetime))
   
-  data
+  return(data)
 }
 
 ```
@@ -158,7 +158,7 @@ We used a local compute context to try our function on the sample locally, then 
 
 ```{r taxi_dates}
 
-taxi_date <- RxXdfData("/user/RevoShare/alizaidi/taxidates",
+taxi_date <- RxXdfData("/user/RevoShare/alizaidi/TaxiDatesTranf",
                        fileSystem = hdfsFS)
 
 rxDataStep(inData = taxi_tip, 
