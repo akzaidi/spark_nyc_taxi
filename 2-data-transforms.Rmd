@@ -1,0 +1,170 @@
+---
+title: "Import"
+output: html_document
+---
+
+# MRS on Spark
+
+## Loading Libraries
+
+As was done in our local environment, we need to load the necessary libraries for our analysis. Please refer to the pkg_requirements.R script for instructions on installing all the dependencies.
+
+
+```{r lib-loads}
+
+options(max.print = 1000, scipen = 999, width = 90)
+library(RevoScaleR)
+rxOptions(reportProgress = 3) # reduces the amount of output RevoScaleR produces
+library(dplyr)
+options(dplyr.print_max = 2000)
+options(dplyr.width = Inf) # shows all columns of a tbl_df object
+library(stringr)
+library(lubridate)
+# library(rgeos) # spatial package
+library(sp) # spatial package
+library(maptools) # spatial package
+library(ggmap)
+library(ggplot2)
+library(gridExtra) # for putting plots side by side
+library(ggrepel) # avoid text overlap in plots
+library(tidyr)
+library(seriation) # package for reordering a distance matrix
+
+
+```
+
+## Summarizing XDF Data
+
+Dealing with data in distributed storage and programming with concurrent systems, requires learning new paradigms and techniques. For data scientists familiar with R, the `RevoScaleR` package abstracts away the difficult portions of distributed computation and allows the user to focus on building R code that can be automatically deployed in distributed environments.
+
+Therefore, we can reuse the majority of the code we developed in the previous sections in our new Spark environment, and `RevoScaleR` will automatically transfer the computation from a single local machine to a network of concurrent systems.
+
+```{r getinfo}
+rxGetInfo(taxi_xdf, getVarInfo = TRUE, numRows = 5)
+```
+
+Observe the new field in the metadata section: **Number of composite data files: 48**. While previously we worked with XDF files, which were single file objects comprosing of multiple blocks, we are now working with blocked datasets that reside in distributed storage. Therefore, our data now has two layers of sharding: the first for the multiple of blocks per HDFS _chunk_, and multiple HDFS _chunks_ per data. We call such data XDFD, to emphasize it's distributed nature. This distinction won't be too important for you to understand as a developer, but is useful to keep in mind 
+
+Even though the data is now saved across multiple nodes in a distributed environment, the data is compressed in order to improve read performance, and metadata is saved, improving querying time for simple statsitics.
+
+
+```{r summary}
+system.time(
+  rxsum_xdf <- rxSummary( ~ fare_amount, taxi_xdf)
+)
+```
+
+
+
+## Transformations with XDFDs
+
+An important distinction with working with data stored in distributed file systems like HDFS in comparison to data residing on a single disk is it's _mutability_. In general, it's much more difficult to overwrite data in distributed storage, as it requires rewriting multiple non-contiguous blocks. 
+
+Therefore, it is often better practice to write to a new location when working with XDFDs than to overwrite existing directories.
+
+```{r transform}
+
+taxi_tip <- RxXdfData("/user/RevoShare/alizaidi/taxitipXdf",
+                      fileSystem = hdfsFS)
+
+rxDataStep(taxi_xdf, taxi_tip,
+           transforms = list(tip_percent = ifelse(fare_amount > 0, 
+                                                  tip_amount/fare_amount,
+                                                  NA)))
+
+
+rxSummary( ~ tip_percent, taxi_tip)
+
+```
+
+Similarly, we can do cross-tabulations and slightly more invovled trnasforms across the Spark cluster the same way we did in a local compute context:
+
+```{r crosstabs}
+
+rxCrossTabs( ~ month:year, taxi_tip,
+             transforms = list(
+               year = as.integer(substr(tpep_pickup_datetime, 1, 4)),
+               month = as.integer(substr(tpep_pickup_datetime, 6, 7)),
+               year = factor(year, levels = 2014:2016),
+               month = factor(month, levels = 1:12)))
+
+
+```
+
+If we want to utilize a function that depends on a R package that is not already installed in our cluster, including all worker nodes, we have to make sure we first install those packages. You can use the instructions [here](https://azure.microsoft.com/en-us/documentation/articles/hdinsight-hadoop-r-server-get-started/#install-r-packages) to install packages throughout your cluster using a script action. 
+
+
+```{r crosstabs_lubridate}
+rxCrossTabs( ~ month:year, taxi_tip,
+             transforms = list(
+               date = ymd_hms(tpep_pickup_datetime), 
+               year = factor(year(date), levels = 2014:2016), 
+               month = factor(month(date), levels = 1:12)), 
+             transformPackages = "lubridate")
+
+
+```
+
+
+## More Complicated Transforms
+
+We saw in the previous sections how we could write our user-defined functions (UDFs) that we could apply to each chunk of our data to create new columns. This  greatly expands on the capabilities available for MRS on a Spark cluster.
+
+
+```{r custom_transform}
+
+xforms <- function(data) { # transformation function for extracting some date and time features
+  require(lubridate)
+  weekday_labels <- c('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')
+  cut_levels <- c(1, 5, 9, 12, 16, 18, 22)
+  hour_labels <- c('1AM-5AM', '5AM-9AM', '9AM-12PM', '12PM-4PM', '4PM-6PM', '6PM-10PM', '10PM-1AM')
+  
+  pickup_datetime <- ymd_hms(data$tpep_pickup_datetime, tz = "UTC")
+  pickup_hour <- addNA(cut(hour(pickup_datetime), cut_levels))
+  pickup_dow <- factor(wday(pickup_datetime), levels = 1:7, labels = weekday_labels)
+  levels(pickup_hour) <- hour_labels
+  
+  dropoff_datetime <- ymd_hms(data$tpep_dropoff_datetime, tz = "UTC")
+  dropoff_hour <- addNA(cut(hour(dropoff_datetime), cut_levels))
+  dropoff_dow <- factor(wday(dropoff_datetime), levels = 1:7, labels = weekday_labels)
+  levels(dropoff_hour) <- hour_labels
+  
+  data$pickup_hour <- pickup_hour
+  data$pickup_dow <- pickup_dow
+  data$dropoff_hour <- dropoff_hour
+  data$dropoff_dow <- dropoff_dow
+  data$trip_duration <- as.integer(as.duration(dropoff_datetime - pickup_datetime))
+  
+  data
+}
+
+```
+
+We defined our function above, and now we apply it to our dataset. In order to ensure our function works on our data, we could try it out on a sample dataset locally first:
+
+```{r local_check}
+x <- head(taxi_tip, n = 100)
+rxSetComputeContext("local")
+
+rxDataStep(inData = x, 
+           outFile = NULL, 
+           transformFunc = xforms, 
+           transformPackages = "lubridate")
+
+rxSetComputeContext(spark_cc)
+```
+
+We used a local compute context to try our function on the sample locally, then reverted to the spark context for doing our analysis on the cluster.
+
+```{r taxi_dates}
+
+taxi_date <- RxXdfData("/user/RevoShare/alizaidi/taxidates",
+                       fileSystem = hdfsFS)
+
+rxDataStep(inData = taxi_tip, 
+           outFile = taxi_date, 
+           transformFunc = xforms, 
+           transformPackages = "lubridate")
+
+```
+
