@@ -17,6 +17,8 @@ reqd_pkgs <- c('dplyr', 'stringr', 'lubridate',
                'ggmap', 'ggplot2', 'gridExt', 
                'ggrepel', 'tidyr', 'seriatiion')
 
+install.packages(reqd_pkgs)
+
 # install.packages('dplyr')
 # install.packages('stringr')
 # install.packages('lubridate')
