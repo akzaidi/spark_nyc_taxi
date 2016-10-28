@@ -1,13 +1,22 @@
 ---
-title: "Import"
-output: html_document
+title: "Microsoft R Server on Spark"
+author: Ali Zaidi
+output:
+  html_document: default
+  html_notebook: default
 ---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.align = 'center', cache = TRUE)
+```
+
 
 # MRS on Spark
 
 ## Loading Libraries
 
-As was done in our local environment, we need to load the necessary libraries for our analysis. Please refer to the pkg_requirements.R script for instructions on installing all the dependencies.
+As was done in our local environment, we need to load the necessary libraries for our analysis. Please refer to the pkg_requirements.R script for instructions on installing all the dependencies. This will load the packages into our local edge node environment. We will see how to load packages across your cluster in the later examples.
 
 
 ```{r lib-loads}
@@ -35,9 +44,55 @@ library(seriation) # package for reordering a distance matrix
 
 ## Summarizing XDF Data
 
-Dealing with data in distributed storage and programming with concurrent systems, requires learning new paradigms and techniques. For data scientists familiar with R, the `RevoScaleR` package abstracts away the difficult portions of distributed computation and allows the user to focus on building R code that can be automatically deployed in distributed environments.
+Dealing with data in distributed storage and programming with concurrent systems often requires learning complicated new paradigms and techniques. Statisticans and data scientists familiar wtih R are unlikely to have much experience with such systems. Forutnatley, tthe `RevoScaleR` package abstracts away the difficult portions of distributed computation and allows the user to focus on building R code that can be automatically deployed in distributed environments.
 
-Therefore, we can reuse the majority of the code we developed in the previous sections in our new Spark environment, and `RevoScaleR` will automatically transfer the computation from a single local machine to a network of concurrent systems.
+As we will see in this module, we can reuse the majority of the code we developed in the previous sections that was meant to run locally, and have it deploy automagically in our new Spark environment. `RevoScaleR` will automatically transfer the computation from a single local machine to a network of concurrent systems.
+
+## Set Up HDFS Paths and Spark Context
+
+In order to connect to HDFS, we have to set up pointers to our hadoop file system. In the of HDInsight clsuters, the file system is actually the fully HDFS-compatible Azure Blob Storage, and fortunately MRS makes it very easy to connect to with simple R statements. 
+
+First, we will make pointers to our files as though they were on local storage.
+
+```{r import}
+
+data_path <- file.path("/user/RevoShare/alizaidi")
+taxi_path <- file.path(data_path, "NYC_Taxidata")
+rxHadoopListFiles(taxi_path)
+
+taxi_xdf <- file.path(data_path, "nyctaxi")
+
+
+```
+
+Next, we will define a HDFS variable, which will tell RevoScaleR to look for the files under the hadoop file system, not the local file system. Secondly, we will create our Spark context, which will tell MRS  to execute the computations on the Spark cluster.
+
+
+```{r sparkhdfs}
+myNameNode <- "default"
+myPort <- 0
+hdfsFS <- RxHdfsFileSystem(hostName = myNameNode, 
+                           port = myPort)
+
+taxi_text <- RxTextData(taxi_path, fileSystem = hdfsFS)
+taxi_xdf <- RxXdfData(taxi_xdf, fileSystem = hdfsFS)
+# if (rxHadoopFileExists(taxi_xdf@file)) rxHadoopRemoveDir(taxi_xdf@file)
+
+spark_cc <- RxSpark(consoleOutput = TRUE,
+                    nameNode = myNameNode,
+                    port = myPort,
+                    executorCores = 12, 
+                    executorMem = "10g", 
+                    executorOverheadMem = "5g", 
+                    persistentRun = TRUE, 
+                    extraSparkConfig = "--conf spark.speculation=true")
+                          
+
+rxSetComputeContext(spark_cc)
+
+```
+
+Now that we our pointers and environment variables for Spark set, we can immediately query our data just as before!
 
 ```{r getinfo}
 rxGetInfo(taxi_xdf, getVarInfo = TRUE, numRows = 5)
@@ -62,10 +117,16 @@ An important distinction with working with data stored in distributed file syste
 
 Therefore, it is often better practice to write to a new location when working with XDFDs than to overwrite existing directories.
 
-```{r transform}
+```{r}
 
 taxi_tip <- RxXdfData("/user/RevoShare/alizaidi/taxitipXdf",
                       fileSystem = hdfsFS)
+```
+
+
+
+```{r transform, eval = FALSE}
+
 
 rxDataStep(taxi_xdf, taxi_tip,
            transforms = list(tip_percent = ifelse(fare_amount > 0, 
@@ -73,9 +134,14 @@ rxDataStep(taxi_xdf, taxi_tip,
                                                   NA)))
 
 
-rxSummary( ~ tip_percent, taxi_tip)
 
 ```
+
+```{r}
+
+rxSummary( ~ tip_percent, taxi_tip)
+```
+
 
 Similarly, we can do cross-tabulations and slightly more invovled trnasforms across the Spark cluster the same way we did in a local compute context:
 
@@ -143,7 +209,7 @@ xforms <- function(data) { # transformation function for extracting some date an
 We defined our function above, and now we apply it to our dataset. In order to ensure our function works on our data, we could try it out on a sample dataset locally first:
 
 ```{r local_check}
-x <- head(taxi_tip, n = 100)
+x <- head(taxi_tip)
 rxSetComputeContext("local")
 
 rxDataStep(inData = x, 
@@ -156,15 +222,23 @@ rxSetComputeContext(spark_cc)
 
 We used a local compute context to try our function on the sample locally, then reverted to the spark context for doing our analysis on the cluster.
 
-```{r taxi_dates}
+```{r}
 
 taxi_date <- RxXdfData("/user/RevoShare/alizaidi/TaxiDatesTranf",
                        fileSystem = hdfsFS)
+```
+
+
+```{r taxi_dates, eval = FALSE}
 
 rxDataStep(inData = taxi_tip, 
            outFile = taxi_date, 
            transformFunc = xforms, 
            transformPackages = "lubridate")
 
+```
+
+```{r}
+rxGetInfo(taxi_date, numRows = 5, getVarInfo = TRUE)
 ```
 
