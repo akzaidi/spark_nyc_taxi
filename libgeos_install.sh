@@ -1,2 +1,2 @@
-sudo apt-get install libgeos-dev
+apt-get install libgeos-dev
 
