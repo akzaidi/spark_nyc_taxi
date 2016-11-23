@@ -1,44 +1,42 @@
 ---
-title: "Microsoft R Server on Spark"
+title: "Deploying to Spark Clusters on HDInsight"
 author: Ali Zaidi
 output:
-  html_document: default
+  html_document:
+    toc: true
+    toc_float: true
+    keep_md: true
   html_notebook: default
 ---
 
 
 ```{r global_options, include=FALSE}
-knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.align = 'center', cache = TRUE)
+knitr::opts_chunk$set(warning = FALSE, 
+                      message = FALSE, 
+                      fig.align = 'center', cache = TRUE)
 ```
 
 
-# MRS on Spark
+# Deploying to Spark Clusters on HDInsight
 
 ## Loading Libraries
 
-As was done in our local environment, we need to load the necessary libraries for our analysis. Please refer to the pkg_requirements.R script for instructions on installing all the dependencies. This will load the packages into our local edge node environment. We will see how to load packages across your cluster in the later examples.
+When working with MRS in distributed environments, we will need to install and load packages across the entire cluster, not just the current client node (edge node). 
+
+In order to install a package across your HDInsight cluster, you will need to use a script action that you can deploy from the cluster's dashboard. See the instructions [here](https://docs.microsoft.com/en-us/azure/hdinsight/hdinsight-hadoop-r-server-get-started#install-r-packages). 
+
+Before installing the packages, please run the following script action on all worker nodes: [install libgeos-dev](https://raw.githubusercontent.com/akzaidi/spark_nyc_taxi/master/libgeos_install.sh).
+
+In order to run this chapter, you will to add the following parameters to packages installation installation script:
+
+`useCRAN dplyr, stringr, lubridate, rgeos, sp, maptools, ggmap, ggplot2, gridExtra, ggrepel, tidyr, seriation`
 
 
 ```{r lib-loads}
 
-options(max.print = 1000, scipen = 999, width = 90)
-library(RevoScaleR)
+options(max.print = 1000, scipen = 999, width = 90, 
+        continue = " ")
 rxOptions(reportProgress = 3) # reduces the amount of output RevoScaleR produces
-library(dplyr)
-options(dplyr.print_max = 2000)
-options(dplyr.width = Inf) # shows all columns of a tbl_df object
-library(stringr)
-library(lubridate)
-# library(rgeos) # spatial package
-library(sp) # spatial package
-library(maptools) # spatial package
-library(ggmap)
-library(ggplot2)
-library(gridExtra) # for putting plots side by side
-library(ggrepel) # avoid text overlap in plots
-library(tidyr)
-library(seriation) # package for reordering a distance matrix
-
 
 ```
 
@@ -57,11 +55,13 @@ First, we will make pointers to our files as though they were on local storage.
 ```{r import}
 
 data_path <- file.path("/user/RevoShare/alizaidi")
-taxi_path <- file.path(data_path, "NYC_Taxidata")
-rxHadoopListFiles(taxi_path)
+taxi_path <- file.path(data_path, "nyctaxi/data")
+hdfs_ls <- paste0("hadoop fs -ls ", taxi_path)
+system(hdfs_ls)
 
-taxi_xdf <- file.path(data_path, "nyctaxi")
+taxi_xdf <- file.path(data_path, "TaxiXdf")
 
+nyc_sample_df <- read.csv("data/yellow_tripdata_2016-05.csv", nrows = 1000)
 
 ```
 
@@ -76,7 +76,6 @@ hdfsFS <- RxHdfsFileSystem(hostName = myNameNode,
 
 taxi_text <- RxTextData(taxi_path, fileSystem = hdfsFS)
 taxi_xdf <- RxXdfData(taxi_xdf, fileSystem = hdfsFS)
-# if (rxHadoopFileExists(taxi_xdf@file)) rxHadoopRemoveDir(taxi_xdf@file)
 
 spark_cc <- RxSpark(consoleOutput = TRUE,
                     nameNode = myNameNode,
@@ -89,6 +88,11 @@ spark_cc <- RxSpark(consoleOutput = TRUE,
                           
 
 rxSetComputeContext(spark_cc)
+
+
+system.time(rxImport(inData = taxi_text,
+                     outFile = taxi_xdf))
+
 
 ```
 
@@ -107,6 +111,8 @@ Even though the data is now saved across multiple nodes in a distributed environ
 system.time(
   rxsum_xdf <- rxSummary( ~ fare_amount, taxi_xdf)
 )
+
+rxsum_xdf
 ```
 
 
@@ -117,16 +123,10 @@ An important distinction with working with data stored in distributed file syste
 
 Therefore, it is often better practice to write to a new location when working with XDFDs than to overwrite existing directories.
 
-```{r}
+```{r transform}
 
 taxi_tip <- RxXdfData("/user/RevoShare/alizaidi/taxitipXdf",
                       fileSystem = hdfsFS)
-```
-
-
-
-```{r transform, eval = FALSE}
-
 
 rxDataStep(taxi_xdf, taxi_tip,
            transforms = list(tip_percent = ifelse(fare_amount > 0, 
@@ -134,12 +134,8 @@ rxDataStep(taxi_xdf, taxi_tip,
                                                   NA)))
 
 
+system.time(rxSummary( ~ tip_percent, taxi_tip))
 
-```
-
-```{r}
-
-rxSummary( ~ tip_percent, taxi_tip)
 ```
 
 
@@ -154,7 +150,6 @@ rxCrossTabs( ~ month:year, taxi_tip,
                year = factor(year, levels = 2014:2016),
                month = factor(month, levels = 1:12)))
 
-
 ```
 
 If we want to utilize a function that depends on a R package that is not already installed in our cluster, including all worker nodes, we have to make sure we first install those packages. You can use the instructions [here](https://azure.microsoft.com/en-us/documentation/articles/hdinsight-hadoop-r-server-get-started/#install-r-packages) to install packages throughout your cluster using a script action. 
@@ -167,7 +162,6 @@ rxCrossTabs( ~ month:year, taxi_tip,
                year = factor(year(date), levels = 2014:2016), 
                month = factor(month(date), levels = 1:12)), 
              transformPackages = "lubridate")
-
 
 ```
 
@@ -226,19 +220,387 @@ We used a local compute context to try our function on the sample locally, then 
 
 taxi_date <- RxXdfData("/user/RevoShare/alizaidi/TaxiDatesTranf",
                        fileSystem = hdfsFS)
+
 ```
 
 
-```{r taxi_dates, eval = FALSE}
+```{r taxi_dates}
 
 rxDataStep(inData = taxi_tip, 
            outFile = taxi_date, 
            transformFunc = xforms, 
            transformPackages = "lubridate")
-
 ```
 
 ```{r}
 rxGetInfo(taxi_date, numRows = 5, getVarInfo = TRUE)
+```
+
+
+## Tabulate Counts by Day of Week and Hour
+
+In order to get a sense of the distribution of counts, let's use `rxSummary` to tabulate the counts of trips by day of week and by pickup hour.
+
+```{r tab_counts}
+
+
+rxs1 <- rxSummary( ~ pickup_hour + pickup_dow + trip_duration, taxi_date)
+# we can add a column for proportions next to the counts
+rxs1$categorical <- lapply(rxs1$categorical, 
+                           function(x) cbind(x, prop =round(prop.table(x$Counts), 2)))
+rxs1
+
+rxs2 <- rxSummary( ~ pickup_dow:pickup_hour, taxi_date)
+rxs2 <- tidyr::spread(rxs2$categorical[[1]], key = 'pickup_hour', value = 'Counts')
+row.names(rxs2) <- rxs2[ , 1]
+rxs2 <- as.matrix(rxs2[ , -1])
+rxs2
+
+levelplot(prop.table(rxs2, 2), cuts = 4, xlab = "", ylab = "", 
+          main = "Distribution of taxis by day of week")
+
+
+```
+
+## Join in Neighborhoods from Shapefile
+
+
+```{r fortify_counts}
+
+library(rgeos)
+library(sp)
+library(maptools)
+library(stringr)
+library(ggplot2)
+
+nyc_shapefile <- readShapePoly('ZillowNeighborhoods-NY/ZillowNeighborhoods-NY.shp')
+mht_shapefile <- subset(nyc_shapefile, str_detect(CITY, 'New York City-Manhattan'))
+
+mht_shapefile@data$id <- as.character(mht_shapefile@data$NAME)
+mht.points <- fortify(gBuffer(mht_shapefile, byid = TRUE, width = 0), region = "NAME")
+
+library(dplyr)
+mht.df <- inner_join(mht.points, mht_shapefile@data, by = "id")
+mht.cent <- mht.df %>%
+  group_by(id) %>%
+  summarize(long = median(long), lat = median(lat))
+
+library(ggrepel)
+ggplot(mht.df, aes(long, lat, fill = id)) + 
+  geom_polygon() +
+  geom_path(color = "white") +
+  coord_equal() +
+  theme(legend.position = "none") +
+  geom_text_repel(aes(label = id), data = mht.cent, size = 2)
+
+```
+
+
+```{r hoods_tbl}
+
+data_coords <- transmute(nyc_sample_df,
+                         long = ifelse(is.na(pickup_longitude), 0, pickup_longitude),
+                         lat = ifelse(is.na(pickup_latitude), 0, pickup_latitude)
+)
+# we specify the columns that correspond to the coordinates
+coordinates(data_coords) <- c('long', 'lat')
+# returns the neighborhoods based on coordinates
+nhoods <- over(data_coords, mht_shapefile)
+# rename the column names in nhoods
+names(nhoods) <- paste('pickup', tolower(names(nhoods)), sep = '_')
+# combine the neighborhood information with the original data
+nyc_sample_df <- cbind(nyc_sample_df, nhoods[, grep('name|city', names(nhoods))])
+head(nyc_sample_df)
+```
+
+
+
+```{r sample_check}
+find_nhoods <- function(data) {
+  
+  # extract pick-up lat and long and find their neighborhoods
+  pickup_longitude <- ifelse(is.na(data$pickup_longitude), 0, data$pickup_longitude)
+  pickup_latitude <- ifelse(is.na(data$pickup_latitude), 0, data$pickup_latitude)
+  data_coords <- data.frame(long = pickup_longitude, lat = pickup_latitude)
+  coordinates(data_coords) <- c('long', 'lat')
+  nhoods <- over(data_coords, shapefile)
+  
+  ## add only the pick-up neighborhood and city columns to the data
+  data$pickup_nhood <- nhoods$NAME
+  data$pickup_borough <- nhoods$CITY
+  
+  # extract drop-off lat and long and find their neighborhoods
+  dropoff_longitude <- ifelse(is.na(data$dropoff_longitude), 0, data$dropoff_longitude)
+  dropoff_latitude <- ifelse(is.na(data$dropoff_latitude), 0, data$dropoff_latitude)
+  data_coords <- data.frame(long = dropoff_longitude, lat = dropoff_latitude)
+  coordinates(data_coords) <- c('long', 'lat')
+  nhoods <- over(data_coords, shapefile)
+  
+  ## add only the drop-off neighborhood and city columns to the data  
+  data$dropoff_nhood <- nhoods$NAME
+  data$dropoff_borough <- nhoods$CITY
+  
+  ## return the data with the new columns added in
+  data
+}
+
+# test the function on a data.frame using rxDataStep
+
+rxSetComputeContext("local")
+head(rxDataStep(nyc_sample_df, transformFunc = find_nhoods, transformPackages = c("sp", "maptools"), 
+                transformObjects = list(shapefile = mht_shapefile)))
+rxSetComputeContext(spark_cc)
+
+```
+
+
+
+```{r full_hoods_join}
+
+
+taxi_hoods <- RxXdfData("/user/RevoShare/alizaidi/TaxiHoodsXdf",
+                       fileSystem = hdfsFS)
+
+st <- Sys.time()
+rxDataStep(taxi_date, taxi_hoods, 
+           transformFunc = find_nhoods, 
+           transformPackages = c("sp", "maptools", "rgeos"), 
+           transformObjects = list(shapefile = mht_shapefile))
+Sys.time() - st
+
+rxGetInfo(taxi_hoods, numRows = 5)
+
+```
+
+
+```{r hoods_borough}
+
+system.time(
+  rxs_all <- rxSummary( ~ ., taxi_hoods)
+)
+head(rxs_all$sDataFrame)
+
+nhoods_by_borough <- rxCrossTabs( ~ pickup_nhood:pickup_borough, taxi_hoods)
+nhoods_by_borough <- nhoods_by_borough$counts[[1]]
+nhoods_by_borough <- as.data.frame(nhoods_by_borough)
+
+# get the neighborhoods by borough
+lnbs <- lapply(names(nhoods_by_borough), 
+               function(vv) subset(nhoods_by_borough, 
+                                   nhoods_by_borough[ , vv] > 0, 
+                                   select = vv, drop = FALSE))
+lapply(lnbs, head)
+
+
+```
+
+
+
+```{r manhattan_hoods_tbl}
+
+manhattan_nhoods <- rownames(nhoods_by_borough)[nhoods_by_borough$`New York City-Manhattan` > 0]
+
+refactor_columns <- function(dataList) {
+  dataList$pickup_nb = factor(dataList$pickup_nhood, levels = nhoods_levels)
+  dataList$dropoff_nb = factor(dataList$dropoff_nhood, levels = nhoods_levels)
+  dataList
+}
+
+mht_hoods <- RxXdfData("/user/RevoShare/alizaidi/MhtHoodsXdf",
+                       fileSystem = hdfsFS)
+
+system.time(rxDataStep(taxi_hoods, mht_hoods, 
+           transformFunc = refactor_columns,
+           transformObjects = list(nhoods_levels = manhattan_nhoods)))
+
+system.time(rxs_pickdrop <- rxSummary( ~ pickup_nb:dropoff_nb, mht_hoods))
+
+head(rxs_pickdrop$categorical[[1]])
+
+system.time(rxHistogram( ~ trip_distance, 
+             mht_hoods, startVal = 0, endVal = 25, histType = "Percent", numBreaks = 20))
+
+system.time(rxs <- rxSummary( ~ pickup_nhood:dropoff_nhood, 
+                  mht_hoods, 
+                  rowSelection = (trip_distance > 15 & trip_distance < 22)))
+
+head(arrange(rxs$categorical[[1]], desc(Counts)), 10)
+
+```
+
+
+
+## Filter Data to Manhattan Only
+
+```{r mht_xdf}
+
+mht_xdf <- RxXdfData("/user/RevoShare/alizaidi/ManhattanXdf",
+                     fileSystem = hdfsFS)
+
+st <- Sys.time()
+rxDataStep(mht_hoods, mht_xdf, 
+           rowSelection = (
+             passenger_count > 0 &
+               trip_distance >= 0 & trip_distance < 30 &
+               trip_duration > 0 & trip_duration < 60*60*24 &
+               str_detect(pickup_borough, 'Manhattan') &
+               str_detect(dropoff_borough, 'Manhattan') &
+               !is.na(pickup_nb) &
+               !is.na(dropoff_nb) &
+               fare_amount > 0), 
+           transformPackages = "stringr",
+           varsToDrop = c('extra', 'mta_tax', 'improvement_surcharge', 'total_amount', 
+                          'pickup_borough', 'dropoff_borough', 'pickup_nhood', 'dropoff_nhood'))
+
+Sys.time() - st
+```
+
+
+
+
+```{r seriate_plots}
+
+
+system.time(rxct <- rxCrossTabs(trip_distance ~ pickup_nb:dropoff_nb, mht_xdf))
+
+res <- rxct$sums$trip_distance / rxct$counts$trip_distance
+
+library(seriation)
+res[which(is.nan(res))] <- mean(res, na.rm = TRUE)
+nb_order <- seriate(res)
+
+system.time(rxc1 <- rxCube(trip_distance ~ pickup_nb:dropoff_nb, mht_xdf))
+
+system.time(rxc2 <- rxCube(minutes_per_mile ~ pickup_nb:dropoff_nb, mht_xdf,
+               transforms = list(minutes_per_mile = (trip_duration / 60) / trip_distance)))
+
+
+system.time(rxc3 <- rxCube(tip_percent ~ pickup_nb:dropoff_nb, mht_xdf))
+
+res <- bind_cols(list(rxc1, rxc2, rxc3))
+res <- res[, c('pickup_nb', 'dropoff_nb', 
+               'trip_distance', 'minutes_per_mile', 'tip_percent')]
+head(res)
+
+library(ggplot2)
+ggplot(res, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = trip_distance), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  coord_fixed(ratio = .9)
+
+newlevs <- levels(res$pickup_nb)[unlist(nb_order)]
+res$pickup_nb <- factor(res$pickup_nb, levels = unique(newlevs))
+res$dropoff_nb <- factor(res$dropoff_nb, levels = unique(newlevs))
+
+library(ggplot2)
+ggplot(res, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = trip_distance), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  coord_fixed(ratio = .9)
+
+
+ggplot(res, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = minutes_per_mile), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  coord_fixed(ratio = .9)
+
+res %>%
+  mutate(tip_color = cut(tip_percent, c(0, 5, 8, 12, 15, 100)/100)) %>%
+  ggplot(aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = tip_color)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  coord_fixed(ratio = .9)
+
+
+```
+
+
+
+## Refactor Neighborhoods
+
+
+```{r refactor_xdf}
+
+
+mht_factor_xdf <- RxXdfData("/user/RevoShare/alizaidi/MhtFactorXdf",
+                            fileSystem = hdfsFS)
+
+
+system.time(rxDataStep(inData = mht_xdf, outFile = mht_factor_xdf,
+           transforms = list(pickup_nb = factor(pickup_nb, levels = newlevels),
+                             dropoff_nb = factor(dropoff_nb, levels = newlevels)),
+           transformObjects = list(newlevels = unique(newlevs))))
+
+```
+
+
+
+## Visualizing Patterns
+
+```{r spatial_patterns}
+
+
+system.time(rxc <- rxCube( ~ pickup_nb:dropoff_nb, mht_factor_xdf))
+
+rxc <- as.data.frame(rxc)
+
+library(dplyr)
+rxc %>%
+  filter(Counts > 0) %>%
+  mutate(pct_all = Counts / sum(Counts) * 100) %>%
+  group_by(pickup_nb) %>%
+  mutate(pct_by_pickup_nb = Counts / sum(Counts) * 100) %>%
+  group_by(dropoff_nb) %>%
+  mutate(pct_by_dropoff_nb = Counts / sum(Counts) * 100) %>%
+  group_by() %>%
+  arrange(desc(Counts)) -> rxcs
+
+head(rxcs)
+
+ggplot(rxcs, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = pct_all), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "black") +
+  coord_fixed(ratio = .9)
+
+ggplot(rxcs, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = pct_by_pickup_nb), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  coord_fixed(ratio = .9)
+
+ggplot(rxcs, aes(pickup_nb, dropoff_nb)) +
+  geom_tile(aes(fill = pct_by_dropoff_nb), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "red") +
+  coord_fixed(ratio = .9)
+
+```
+
+### Temporal Patterns
+
+```{r temporal_patterns}
+
+system.time(res1 <- rxCube(tip_percent ~ pickup_dow:pickup_hour, mht_factor_xdf))
+
+system.time(res2 <- rxCube(fare_amount / (trip_duration / 60) ~ pickup_dow:pickup_hour, 
+                           mht_factor_xdf))
+
+names(res2)[3] <- 'fare_per_minute'
+res <- bind_cols(list(res1, res2))
+res <- res[, c('pickup_dow', 'pickup_hour', 'fare_per_minute', 'tip_percent', 'Counts')]
+
+library(ggplot2)
+ggplot(res, aes(pickup_dow, pickup_hour)) +
+  geom_tile(aes(fill = fare_per_minute), colour = "white") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  geom_text(aes(label = sprintf('%dK riders\n (%d%% tip)', signif(Counts / 1000, 2), round(tip_percent, 0))), size = 2.5) +
+  coord_fixed(ratio = .9)
+
+
 ```
 
