@@ -77,14 +77,12 @@ hdfsFS <- RxHdfsFileSystem(hostName = myNameNode,
 taxi_text <- RxTextData(taxi_path, fileSystem = hdfsFS)
 taxi_xdf <- RxXdfData(taxi_xdf, fileSystem = hdfsFS)
 
-spark_cc <- RxSpark(consoleOutput = TRUE,
+spark_cc <- RxSpark(
                     nameNode = myNameNode,
                     port = myPort,
-                    executorCores = 12, 
-                    executorMem = "10g", 
-                    executorOverheadMem = "5g", 
                     persistentRun = TRUE, 
-                    extraSparkConfig = "--conf spark.speculation=true")
+                    extraSparkConfig = "--conf spark.speculation=true"
+                    )
                           
 
 rxSetComputeContext(spark_cc)
