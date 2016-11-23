@@ -1,5 +1,5 @@
 ---
-title: "Deploying to Spark Clusters on HDInsight"
+title: "Microsoft R Server on Spark Clusters"
 author: Ali Zaidi
 output:
   html_document:
@@ -17,7 +17,15 @@ knitr::opts_chunk$set(warning = FALSE,
 ```
 
 
-# Deploying to Spark Clusters on HDInsight
+# Deploying to Spark Clusters on Azure HDInsight
+
+## Azure HDInsight Spark Clusters
+
+[Azure HDInsight](https://azure.microsoft.com/en-us/services/hdinsight/) is a managed Hadoop offering for the cloud. It provides enterprise ready Hadoop solutions without the hassle of installation, management, and configuration. Developers and data scientists can immediately create and deploy big data solutions on the cloud with the latest and greatest of the Hadoop ecosystem.
+
+Dealing with data in distributed storage and programming with concurrent systems often requires learning complicated new paradigms and techniques. Statisticans and data scientists familiar wtih R are unlikely to have much experience with such systems. Fortunately, the `RevoScaleR` package abstracts away the difficult portions of distributed computation and allows the user to focus on building R code that can be automatically deployed in distributed environments.
+
+As we will see in this module, we can reuse the majority of the code we developed in the previous sections that was meant to run locally, and have it deploy automagically in our new Spark environment. `RevoScaleR` will automatically transfer the computation from a single local machine to a network of concurrent systems.
 
 ## Loading Libraries
 
@@ -40,11 +48,6 @@ rxOptions(reportProgress = 3) # reduces the amount of output RevoScaleR produces
 
 ```
 
-## Summarizing XDF Data
-
-Dealing with data in distributed storage and programming with concurrent systems often requires learning complicated new paradigms and techniques. Statisticans and data scientists familiar wtih R are unlikely to have much experience with such systems. Forutnatley, tthe `RevoScaleR` package abstracts away the difficult portions of distributed computation and allows the user to focus on building R code that can be automatically deployed in distributed environments.
-
-As we will see in this module, we can reuse the majority of the code we developed in the previous sections that was meant to run locally, and have it deploy automagically in our new Spark environment. `RevoScaleR` will automatically transfer the computation from a single local machine to a network of concurrent systems.
 
 ## Set Up HDFS Paths and Spark Context
 
@@ -65,7 +68,7 @@ nyc_sample_df <- read.csv("data/yellow_tripdata_2016-05.csv", nrows = 1000)
 
 ```
 
-Next, we will define a HDFS variable, which will tell RevoScaleR to look for the files under the hadoop file system, not the local file system. Secondly, we will create our Spark context, which will tell MRS  to execute the computations on the Spark cluster.
+Next, we will define a HDFS variable, which will tell RevoScaleR to look for the files under the Hadoop file system, not the local file system. Secondly, we will create our Spark context, which will tell MRS  to execute the computations on the Spark cluster. We will use all the default arguments, except for insisting that `RevoScaleR` reuse the existing Spark application whenever possible (the `persistentRun` parameter), and that Spark attempt to restart tasks that appear to be lagging (the `extraSparkConfig` value).
 
 
 ```{r sparkhdfs}
@@ -262,6 +265,8 @@ levelplot(prop.table(rxs2, 2), cuts = 4, xlab = "", ylab = "",
 
 ## Join in Neighborhoods from Shapefile
 
+Just as we did in the prior chapters, we will add in categorical features of the neighborhoods related to our dataset, by merging in the data from a shapefile containing New York city data. 
+
 
 ```{r fortify_counts}
 
@@ -311,7 +316,7 @@ nyc_sample_df <- cbind(nyc_sample_df, nhoods[, grep('name|city', names(nhoods))]
 head(nyc_sample_df)
 ```
 
-
+Let's create our merge function and ensure that it works with our sample `data.frame` in a local compute context. 
 
 ```{r sample_check}
 find_nhoods <- function(data) {
@@ -351,7 +356,7 @@ rxSetComputeContext(spark_cc)
 
 ```
 
-
+Then we will go ahead and deploy it across our cluster in a Spark compute context:
 
 ```{r full_hoods_join}
 
@@ -392,7 +397,9 @@ lapply(lnbs, head)
 
 ```
 
+## Filter to Manhattan Neighborhoods
 
+The majority of the data lies in the borough of Manhattan. Let's go ahead and refactor our neighborhoood columns to exclude any non-Manhattan pickup and dropoff rides.
 
 ```{r manhattan_hoods_tbl}
 
@@ -428,7 +435,9 @@ head(arrange(rxs$categorical[[1]], desc(Counts)), 10)
 
 
 
-## Filter Data to Manhattan Only
+### Filter Data to Manhattan Only
+
+Now that our dataset has encoded `NA` for the non-Manhattan rides, we can filter out those rides as well as other _outlier_ rides.
 
 ```{r mht_xdf}
 
@@ -453,7 +462,9 @@ rxDataStep(mht_hoods, mht_xdf,
 Sys.time() - st
 ```
 
+## Visualize Trip Routes
 
+Let's make some visualizations of taxi rides.
 
 
 ```{r seriate_plots}
@@ -517,7 +528,7 @@ res %>%
 
 
 
-## Refactor Neighborhoods
+## Refactor Neighborhoods by Distance
 
 
 ```{r refactor_xdf}
@@ -537,6 +548,8 @@ system.time(rxDataStep(inData = mht_xdf, outFile = mht_factor_xdf,
 
 
 ## Visualizing Patterns
+
+### Spatial Patterns
 
 ```{r spatial_patterns}
 
@@ -580,6 +593,37 @@ ggplot(rxcs, aes(pickup_nb, dropoff_nb)) +
 
 ### Temporal Patterns
 
+```{r mht_factor_xdf, cache = FALSE, echo = FALSE}
+
+
+myNameNode <- "default"
+myPort <- 0
+hdfsFS <- RxHdfsFileSystem(hostName = myNameNode, 
+                           port = myPort)
+
+taxi_text <- RxTextData(taxi_path, fileSystem = hdfsFS)
+taxi_xdf <- RxXdfData(taxi_xdf, fileSystem = hdfsFS)
+
+spark_cc <- RxSpark(
+                    nameNode = myNameNode,
+                    port = myPort,
+                    persistentRun = TRUE, 
+                    extraSparkConfig = "--conf spark.speculation=true"
+                    )
+                          
+
+rxSetComputeContext(spark_cc)
+
+
+mht_factor_xdf <- RxXdfData("/user/RevoShare/alizaidi/MhtFactorXdf",
+                            fileSystem = hdfsFS)
+
+
+
+```
+
+
+
 ```{r temporal_patterns}
 
 system.time(res1 <- rxCube(tip_percent ~ pickup_dow:pickup_hour, mht_factor_xdf))
@@ -591,14 +635,67 @@ names(res2)[3] <- 'fare_per_minute'
 res <- bind_cols(list(res1, res2))
 res <- res[, c('pickup_dow', 'pickup_hour', 'fare_per_minute', 'tip_percent', 'Counts')]
 
+
+
+
+```
+
+```{r visualize_temporal}
+
 library(ggplot2)
 ggplot(res, aes(pickup_dow, pickup_hour)) +
   geom_tile(aes(fill = fare_per_minute), colour = "white") +
   theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
   scale_fill_gradient(low = "white", high = "steelblue") +
-  geom_text(aes(label = sprintf('%dK riders\n (%d%% tip)', signif(Counts / 1000, 2), round(tip_percent, 0))), size = 2.5) +
+  geom_text(aes(label = sprintf('%dK riders\n (%d%% tip)', signif(Counts / 1000, 2), round(tip_percent*100, 0))), size = 2.5) +
   coord_fixed(ratio = .9)
 
+```
+
+## Training Statistical Models in a Spark Compute Context
+
+
+Let's try to train a few statistical algorithms for predicting the probability of a tip greater than 10% and see how they perform relative to one another.
+
+
+```{r train_data}
+
+model_xdf <- RxXdfData("/user/RevoShare/alizaidi/ModelXdf",
+                       fileSystem = hdfsFS)
+
+system.time(rxDataStep(inData = mht_factor_xdf,
+             outFile = model_xdf,
+             transforms = list(
+               split = factor(ifelse(rbinom(.rxNumRows, size = 1, prob = 0.75), 
+                                     "train", "test")),
+               good_tip = ifelse(tip_percent > 0.1, 1, 0)))
+            )  
+
+rxSummary(~split + good_tip, model_xdf)
+
+```
+
+Now that we have created our train and test column, we can train a number of models simultaneously using the `rxExec` function. The `rxExec` function takes a single function that it distributes across all worker nodes. In this case, we will distribute the computation of three models we want to train: single decision tree, random forests, and gradient boosted trees.
+
+
+```{r train_models, eval = FALSE}
+
+list_models <- list(rxDTree, rxDForest, rxBTrees)
+
+train_model <- function(model = rxDTree,
+                        xdf_data = model_xdf) {
+  
+  form <- formula(good_tip ~ pickup_nb + dropoff_nb + pickup_hour + pickup_dow)
+  
+  rx_model <- model(form, data = xdf_data, 
+                    rowSelection = (split == "train"),
+                    method = "class")
+
+  
+  return(rx_model)  
+}
+
+system.time(trained_models <- rxExec(train_model, model = rxElemArg(list_models), xdf_data = model_xdf))
 
 ```
 
