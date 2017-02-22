@@ -1,0 +1,56 @@
+---
+title: "Installing Packages"
+author: Ali Zaidi
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    keep_md: true
+  html_notebook: default
+---
+
+
+## Installing Packages onto the Edge Node
+
+For installing R packages on the edge node, run the following script:
+
+```{r}
+your_name <- system('whoami', intern = TRUE)
+location <- file.path("/home", your_name, 
+                      "spark_nyc_taxi", 
+                      "Instructor-Resources", "Shell-Scripts",
+                      "install_pkg.R")
+system(paste0("Rscript ", location))
+```
+
+## Installing Packages On the Cluster
+
+To Install Packages Across the Cluster, use the `InstallRPackages.sh` script action in the Portal.
+
+## Download Data
+
+
+```{r}
+
+data_links <- file.path("/home", your_name, 
+                      "spark_nyc_taxi", 
+                      "Instructor-Resources", "Shell-Scripts",
+                      "download_taxi.sh")
+system(paste0("chmod +x ", data_links))
+system(paste0("./", data_links))
+
+```
+
+
+## Move Data to HDFS
+
+
+```{r}
+taxi_files <- list.files("data/")
+lapply(taxi_files, function(x) {
+  rxHadoopCopyFromLocal(source = paste0("data/", x), 
+                        dest = paste0("/user/RevoShare/,", your_name, "/taxidata/", x))
+})
+
+```
+
