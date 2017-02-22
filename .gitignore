@@ -2,3 +2,6 @@ data/
 .Rproj.user/
 .Rproj.user
 2-data-transforms_cache/
+*.zip
+2-data-transforms_files/*
+RxSpark_post/RxSpark_Post_files/*
