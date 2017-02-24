@@ -37,7 +37,7 @@ data_links <- file.path("/home", your_name,
                       "Instructor-Resources", "Shell-Scripts",
                       "download_taxi.sh")
 system(paste0("chmod +x ", data_links))
-system(paste0("./", data_links))
+system(paste0("sh ", data_links))
 
 ```
 
