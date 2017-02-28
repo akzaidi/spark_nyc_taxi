@@ -46,11 +46,8 @@ system(paste0("sh ", data_links))
 
 
 ```{r}
-taxi_files <- list.files("data/")
-lapply(taxi_files, function(x) {
-  rxHadoopCopyFromLocal(source = paste0("data/", x), 
-                        dest = paste0("/user/RevoShare/,", your_name, "/taxidata/", x))
-})
-
+taxi_dir_hdfs <- paste0("/user/RevoShare/", your_name, "/nyctaxi")
+system(paste0('hdfs dfs -mkdir ', taxi_dir_hdfs))
+system(paste0("hdfs dfs -copyFromLocal data/ ", taxi_dir_hdfs))
 ```
 

@@ -59,7 +59,7 @@ First, we will make pointers to our files as though they were on local storage.
 
 data_path <- file.path("/user/RevoShare/alizaidi")
 taxi_path <- file.path(data_path, "nyctaxi/data")
-hdfs_ls <- paste0("hadoop fs -ls ", taxi_path)
+hdfs_ls <- paste0("hdfs dfs -ls ", taxi_path)
 system(hdfs_ls)
 
 taxi_xdf <- file.path(data_path, "TaxiXdf")

@@ -1,21 +1,22 @@
 # Update CRAN Mirror ------------------------------------------------------
 
 r <- getOption("repos")
-r[["CRAN"]] <- "https://mran.revolutionanalytics.com/snapshot/2016-10-25"
+mran_date <- Sys.Date() - 1
+r[["CRAN"]] <- paste0("https://mran.revolutionanalytics.com/snapshot/", mran_date)
 options(repos = r)
 
 
 # Install Dependencies ----------------------------------------------------
 
-system("sudo apt-get update")
-system("sudo apt-get install libgeos-dev -y")
+# system("sudo apt-get update")
+# system("sudo apt-get install libgeos-dev -y")
 
 # Install Packages --------------------------------------------------------
 
 reqd_pkgs <- c('dplyr', 'stringr', 'lubridate', 
                  'rgeos', 'sp', 'maptools', 
                'ggmap', 'ggplot2', 'gridExt', 
-               'ggrepel', 'tidyr', 'seriatiion')
+               'ggrepel', 'tidyr', 'seriation')
 
 install.packages(reqd_pkgs)
 
